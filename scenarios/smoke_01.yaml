@@ -1,0 +1,26 @@
+scenario_id: smoke_01
+
+analysis:
+  start_time_utc: "2026-10-26T00:00:00Z"
+  end_time_utc: "2026-10-26T06:00:00Z"
+  ephemeris_interval_seconds: 300.0
+
+satellites:
+  - satellite_id: SAT-SMOKE-01
+    altitude_km: 550.0
+    inclination_deg: 53.0
+    eccentricity: 0.0
+    raan_deg: 0.0
+    arg_perigee_deg: 0.0
+    mean_anomaly_deg: 0.0
+    bstar: 0.0
+
+ground_stations:
+  - station_id: GS-SMOKE-01
+    latitude_deg: 0.0
+    longitude_deg: 0.0
+    altitude_m: 0.0
+    minimum_elevation_deg: 10.0
+
+output:
+  output_dir: outputs/smoke_01
