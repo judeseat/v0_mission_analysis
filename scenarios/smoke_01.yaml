@@ -18,7 +18,7 @@ satellites:
 ground_stations:
   - station_id: GS-SMOKE-01
     latitude_deg: 0.0
-    longitude_deg: 0.0
+    longitude_deg: -60.0
     altitude_m: 0.0
     minimum_elevation_deg: 10.0
 
