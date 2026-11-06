@@ -335,3 +335,63 @@ def test_load_scenario_file_errors(tmp_path: Path) -> None:
     bad_yaml.write_text("- item1\n- item2\n", encoding="utf-8")
     with pytest.raises(ValueError, match="does not contain a valid mapping/dictionary"):
         load_scenario(bad_yaml)
+
+
+def test_load_poc_01_yaml() -> None:
+    """Verify loading and validation of scenarios/poc_01.yaml."""
+    yaml_path = Path(__file__).resolve().parent.parent / "scenarios" / "poc_01.yaml"
+    scenario = load_scenario(yaml_path)
+
+    assert scenario.scenario_id == "poc_01"
+    assert scenario.constellation is not None
+    assert scenario.satellites == []
+    assert scenario.constellation.type == "walker_delta"
+    assert scenario.constellation.constellation_id == "WALKER-6-2-1"
+    assert scenario.constellation.total_satellites == 6
+    assert scenario.constellation.planes == 2
+    assert scenario.constellation.phasing == 1
+
+    # Exactly two ground stations
+    assert len(scenario.ground_stations) == 2
+    station_ids = [gs.station_id for gs in scenario.ground_stations]
+    assert station_ids == ["GS-EQUATOR", "GS-MIDLAT"]
+
+    # Duration 86,400s (24 hours) and 60s timestep
+    assert scenario.analysis.duration_seconds == 86400.0
+    assert scenario.analysis.ephemeris_interval_seconds == 60.0
+
+    # Expected future inclusive sample count: 86400 / 60 + 1 = 1,441
+    expected_sample_count = int(scenario.analysis.duration_seconds / scenario.analysis.ephemeris_interval_seconds) + 1
+    assert expected_sample_count == 1441
+
+
+def test_scenario_satellite_source_mutual_exclusivity() -> None:
+    """Verify rejection when both or neither satellite sources are specified."""
+    data = _valid_base_dict()
+
+    walker_dict = {
+        "type": "walker_delta",
+        "constellation_id": "W-TEST",
+        "total_satellites": 6,
+        "planes": 2,
+        "phasing": 1,
+        "altitude_km": 550.0,
+        "inclination_deg": 53.0,
+    }
+
+    # Both explicit satellites and constellation populated -> Rejected
+    data["constellation"] = walker_dict
+    with pytest.raises(ValidationError, match="not both"):
+        ScenarioConfig.model_validate(data)
+
+    # Neither populated (satellites empty, constellation None) -> Rejected
+    data["satellites"] = []
+    data["constellation"] = None
+    with pytest.raises(ValidationError, match="either at least one explicit satellite or a 'constellation'"):
+        ScenarioConfig.model_validate(data)
+
+    # Constellation only (satellites empty list) -> Accepted
+    data["constellation"] = walker_dict
+    cfg = ScenarioConfig.model_validate(data)
+    assert cfg.constellation is not None
+    assert cfg.satellites == []

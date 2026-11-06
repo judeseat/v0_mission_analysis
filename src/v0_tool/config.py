@@ -5,11 +5,15 @@ Stage 1 Assumption:
     altitude, inclination, and cyclic orbital angles) are assumed to be defined
     at analysis.start_time_utc. No separate satellite epoch field is defined in
     Stage 1.
+
+Stage 2 Evolution:
+    Stage 2 supports both explicit satellite lists (for Stage 1 compatibility)
+    and synthetic Walker Delta constellation definitions.
 """
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -124,6 +128,73 @@ class SatelliteConfig(BaseModel):
         return _validate_non_empty_string(v, "satellite_id")
 
 
+class WalkerDeltaConfig(BaseModel):
+    """Configuration for generating a synthetic Walker Delta constellation."""
+
+    type: Literal["walker_delta"] = "walker_delta"
+    constellation_id: str = Field(..., description="Unique constellation identifier.")
+    total_satellites: int = Field(..., gt=0, description="Total number of satellites (T).")
+    planes: int = Field(..., gt=0, description="Number of orbital planes (P).")
+    phasing: int = Field(..., ge=0, description="Walker phasing parameter (F), 0 <= F < P.")
+    altitude_km: float = Field(
+        ...,
+        gt=0.0,
+        description="Representative circular design altitude in kilometres.",
+    )
+    inclination_deg: float = Field(
+        ...,
+        ge=0.0,
+        le=180.0,
+        description="Orbital inclination in degrees [0, 180].",
+    )
+    eccentricity: float = Field(
+        0.0,
+        ge=0.0,
+        lt=1.0,
+        description="Orbital eccentricity [0, 1). Defaults to 0.0 for circular design orbit.",
+    )
+    raan_origin_deg: float = Field(
+        0.0,
+        ge=0.0,
+        lt=360.0,
+        description="RAAN origin in degrees [0, 360).",
+    )
+    mean_anomaly_origin_deg: float = Field(
+        0.0,
+        ge=0.0,
+        lt=360.0,
+        description="Mean anomaly origin in degrees [0, 360).",
+    )
+    arg_perigee_deg: float = Field(
+        0.0,
+        ge=0.0,
+        lt=360.0,
+        description="Argument of perigee in degrees [0, 360).",
+    )
+    bstar: float = Field(
+        0.0,
+        description="SGP4 B* drag parameter (1/earth radii). Defaults to 0.0.",
+    )
+
+    @field_validator("constellation_id")
+    @classmethod
+    def validate_constellation_id(cls, v: str) -> str:
+        return _validate_non_empty_string(v, "constellation_id")
+
+    @model_validator(mode="after")
+    def validate_walker_parameters(self) -> Self:
+        """Validate divisibility and phasing parameter constraints."""
+        if self.total_satellites % self.planes != 0:
+            raise ValueError(
+                f"total_satellites ({self.total_satellites}) must be divisible by planes ({self.planes})."
+            )
+        if self.phasing >= self.planes:
+            raise ValueError(
+                f"phasing parameter F ({self.phasing}) must be strictly less than planes P ({self.planes})."
+            )
+        return self
+
+
 class GroundStationConfig(BaseModel):
     """Configuration for a fixed ground station or gateway."""
 
@@ -173,9 +244,12 @@ class ScenarioConfig(BaseModel):
     scenario_id: str = Field(..., description="Unique scenario identifier.")
     analysis: AnalysisConfig
     satellites: list[SatelliteConfig] = Field(
-        ...,
-        min_length=1,
-        description="List of satellites (at least one required).",
+        default_factory=list,
+        description="Explicit list of satellites.",
+    )
+    constellation: WalkerDeltaConfig | None = Field(
+        default=None,
+        description="Synthetic Walker Delta constellation configuration.",
     )
     ground_stations: list[GroundStationConfig] = Field(
         ...,
@@ -190,13 +264,27 @@ class ScenarioConfig(BaseModel):
         return _validate_non_empty_string(v, "scenario_id")
 
     @model_validator(mode="after")
-    def validate_unique_identifiers(self) -> Self:
-        """Enforce unique identifiers within satellite and ground station lists."""
-        sat_ids = [sat.satellite_id for sat in self.satellites]
-        if len(sat_ids) != len(set(sat_ids)):
+    def validate_satellite_source_and_identifiers(self) -> Self:
+        """Enforce exactly one satellite source and unique identifiers."""
+        has_satellites = len(self.satellites) > 0
+        has_constellation = self.constellation is not None
+
+        if has_satellites and has_constellation:
             raise ValueError(
-                f"Duplicate satellite_id detected in satellites list: {sat_ids}"
+                "Scenario must define either explicit 'satellites' or a 'constellation', not both."
             )
+        if not has_satellites and not has_constellation:
+            raise ValueError(
+                "Scenario must define either at least one explicit satellite or a 'constellation'."
+            )
+
+        # Enforce unique identifiers when explicit satellites are supplied
+        if has_satellites:
+            sat_ids = [sat.satellite_id for sat in self.satellites]
+            if len(sat_ids) != len(set(sat_ids)):
+                raise ValueError(
+                    f"Duplicate satellite_id detected in satellites list: {sat_ids}"
+                )
 
         station_ids = [gs.station_id for gs in self.ground_stations]
         if len(station_ids) != len(set(station_ids)):
