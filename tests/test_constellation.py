@@ -8,11 +8,29 @@ from v0_tool.constellation import generate_walker_delta
 
 @pytest.fixture
 def walker_6_2_1_config() -> WalkerDeltaConfig:
-    """Standard POC-01 Walker Delta 6/2/1 configuration."""
+    """Generic Walker Delta 6/2/1 configuration for generator coverage."""
     return WalkerDeltaConfig(
         constellation_id="WALKER-6-2-1",
         total_satellites=6,
         planes=2,
+        phasing=1,
+        altitude_km=550.0,
+        inclination_deg=53.0,
+        eccentricity=0.0,
+        raan_origin_deg=0.0,
+        mean_anomaly_origin_deg=0.0,
+        arg_perigee_deg=0.0,
+        bstar=0.0,
+    )
+
+
+@pytest.fixture
+def walker_6_3_1_config() -> WalkerDeltaConfig:
+    """Standard POC-01 Walker Delta 6/3/1 configuration."""
+    return WalkerDeltaConfig(
+        constellation_id="WALKER-6-3-1",
+        total_satellites=6,
+        planes=3,
         phasing=1,
         altitude_km=550.0,
         inclination_deg=53.0,
@@ -47,6 +65,44 @@ def test_generate_walker_delta_6_2_1_exact_table(walker_6_2_1_config: WalkerDelt
         ("SAT-P02-S01", 180.0, 60.0),
         ("SAT-P02-S02", 180.0, 180.0),
         ("SAT-P02-S03", 180.0, 300.0),
+    ]
+
+    for sat, (exp_id, exp_raan, exp_m) in zip(sats, expected_data):
+        assert isinstance(sat, SatelliteConfig)
+        assert sat.satellite_id == exp_id
+        assert sat.raan_deg == pytest.approx(exp_raan, abs=1e-9)
+        assert sat.mean_anomaly_deg == pytest.approx(exp_m, abs=1e-9)
+        # Check common parameters
+        assert sat.altitude_km == 550.0
+        assert sat.inclination_deg == 53.0
+        assert sat.eccentricity == 0.0
+        assert sat.arg_perigee_deg == 0.0
+        assert sat.bstar == 0.0
+
+
+def test_generate_walker_delta_6_3_1_exact_table(walker_6_3_1_config: WalkerDeltaConfig) -> None:
+    """Verify exact 6-satellite output, IDs, ordering, RAAN and mean anomalies for 6/3/1.
+
+    Expected table:
+      SAT-P01-S01: RAAN 0, mean anomaly 0
+      SAT-P01-S02: RAAN 0, mean anomaly 180
+      SAT-P02-S01: RAAN 120, mean anomaly 60
+      SAT-P02-S02: RAAN 120, mean anomaly 240
+      SAT-P03-S01: RAAN 240, mean anomaly 120
+      SAT-P03-S02: RAAN 240, mean anomaly 300
+    """
+    sats = generate_walker_delta(walker_6_3_1_config)
+
+    assert isinstance(sats, tuple)
+    assert len(sats) == 6
+
+    expected_data = [
+        ("SAT-P01-S01", 0.0, 0.0),
+        ("SAT-P01-S02", 0.0, 180.0),
+        ("SAT-P02-S01", 120.0, 60.0),
+        ("SAT-P02-S02", 120.0, 240.0),
+        ("SAT-P03-S01", 240.0, 120.0),
+        ("SAT-P03-S02", 240.0, 300.0),
     ]
 
     for sat, (exp_id, exp_raan, exp_m) in zip(sats, expected_data):

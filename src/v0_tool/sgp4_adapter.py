@@ -191,3 +191,46 @@ def create_sgp4_satellite(
         epoch_utc=epoch_utc,
         gravity_model=gravity_model,
     )
+
+
+
+def create_sgp4_constellation(
+    satellites: tuple[SatelliteConfig, ...],
+    epoch_utc: datetime,
+    gravity_model: str = "WGS72",
+) -> tuple[Sgp4SatelliteRecord, ...]:
+    """Construct an immutable sequence of Sgp4SatelliteRecord objects from SatelliteConfigs.
+
+    Preserves exact input ordering and assigns sequential 1-based satnum integers (1..M).
+
+    Args:
+        satellites: Non-empty sequence of SatelliteConfig records (e.g. from generate_walker_delta).
+        epoch_utc: Common timezone-aware UTC epoch for the orbital elements.
+        gravity_model: Gravity model name, must be 'WGS72' (default) or 'WGS84'.
+
+    Returns:
+        tuple[Sgp4SatelliteRecord, ...]: Ordered Sgp4SatelliteRecord objects.
+
+    Raises:
+        ValueError: If satellites sequence is empty, contains duplicate satellite IDs,
+                    or if epoch_utc is invalid.
+    """
+    if len(satellites) == 0:
+        raise ValueError("satellites tuple must not be empty.")
+
+    sat_ids = [s.satellite_id for s in satellites]
+    if len(sat_ids) != len(set(sat_ids)):
+        raise ValueError(f"Duplicate satellite_id detected in satellites: {sat_ids}")
+
+    records: list[Sgp4SatelliteRecord] = []
+    for idx, sat_cfg in enumerate(satellites):
+        satnum = idx + 1
+        record = create_sgp4_satellite(
+            satellite=sat_cfg,
+            epoch_utc=epoch_utc,
+            satnum=satnum,
+            gravity_model=gravity_model,
+        )
+        records.append(record)
+
+    return tuple(records)

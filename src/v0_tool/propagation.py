@@ -209,3 +209,135 @@ def propagate_satellite(
         propagation_model="SGP4",
         gravity_model=record.gravity_model,
     )
+
+
+
+class ConstellationPropagationError(RuntimeError):
+    """Raised when one or more satellites report non-zero SGP4 error codes during batch propagation."""
+
+    pass
+
+
+@dataclass(frozen=True)
+class ConstellationEphemerisProduct:
+    """Library-independent ephemeris result for an entire satellite constellation.
+
+    Note on immutability:
+        While this dataclass wrapper is frozen, the contained NumPy arrays
+        are standard mutable buffer objects and are not deeply immutable.
+    """
+
+    satellite_ids: tuple[str, ...]
+    satnums: tuple[int, ...]
+    timestamps_utc: np.ndarray  # shape (N,), dtype=object (datetime)
+    position_teme_km: np.ndarray  # shape (M, N, 3), dtype=np.float64
+    velocity_teme_km_s: np.ndarray  # shape (M, N, 3), dtype=np.float64
+    sgp4_error_codes: np.ndarray  # shape (M, N), integer dtype
+    frame: str = "TEME"
+    position_unit: str = "km"
+    velocity_unit: str = "km/s"
+    propagation_model: str = "SGP4"
+    gravity_model: str = "WGS72"
+
+
+def _check_constellation_sgp4_errors(
+    records: tuple[Sgp4SatelliteRecord, ...],
+    timestamps: np.ndarray,
+    error_codes: np.ndarray,
+) -> None:
+    """Inspect the 2D SGP4 error code matrix and raise ConstellationPropagationError if non-zero."""
+    failing_indices = np.nonzero(error_codes)
+    n_failed = len(failing_indices[0])
+    if n_failed == 0:
+        return
+
+    first_sat_idx = int(failing_indices[0][0])
+    first_time_idx = int(failing_indices[1][0])
+
+    failing_record = records[first_sat_idx]
+    failing_time = timestamps[first_time_idx]
+    total_samples = error_codes.size
+
+    unique_codes = sorted(set(error_codes[failing_indices].tolist()))
+    error_descriptions = [
+        f"Code {code}: {SGP4_ERRORS.get(code, 'Unknown SGP4 error code')}"
+        for code in unique_codes
+    ]
+    details = "; ".join(error_descriptions)
+
+    raise ConstellationPropagationError(
+        f"Constellation SGP4 propagation failed for {n_failed}/{total_samples} samples. "
+        f"First failure on satellite '{failing_record.satellite_id}' (satnum {failing_record.satnum}) "
+        f"at time index {first_time_idx} (time: {failing_time}). "
+        f"Encountered error codes: [{details}]."
+    )
+
+
+def propagate_constellation(
+    records: tuple[Sgp4SatelliteRecord, ...],
+    timestamps: np.ndarray,
+) -> ConstellationEphemerisProduct:
+    """Propagate a constellation of SGP4 satellites across the provided time grid using SatrecArray.
+
+    Args:
+        records: Non-empty sequence of Sgp4SatelliteRecord objects.
+        timestamps: 1D NumPy array of strictly increasing UTC datetimes.
+
+    Returns:
+        ConstellationEphemerisProduct containing batched (M, N, 3) positions and velocities.
+
+    Raises:
+        ValueError: If records or timestamps fail validation.
+        ConstellationPropagationError: If any satellite at any timestamp reports an SGP4 error.
+    """
+    if len(records) == 0:
+        raise ValueError("records tuple must not be empty.")
+
+    # Validate unique satellite IDs
+    sat_ids = [r.satellite_id for r in records]
+    if len(sat_ids) != len(set(sat_ids)):
+        raise ValueError(f"Duplicate satellite_id detected in records: {sat_ids}")
+
+    # Validate positive, unique satnums
+    satnums = [r.satnum for r in records]
+    if any(s <= 0 for s in satnums):
+        raise ValueError(f"All satnum values must be positive integers, got: {satnums}")
+    if len(satnums) != len(set(satnums)):
+        raise ValueError(f"Duplicate satnum detected in records: {satnums}")
+
+    # Validate common gravity model and common epoch
+    gravity_models = {r.gravity_model for r in records}
+    if len(gravity_models) != 1:
+        raise ValueError(f"All records must share one gravity model, got: {gravity_models}")
+    shared_gravity_model = records[0].gravity_model
+
+    epochs = {r.epoch_utc for r in records}
+    if len(epochs) != 1:
+        raise ValueError(f"All records must share one UTC epoch, got: {epochs}")
+
+    # Validate timestamps contract
+    _validate_timestamps(timestamps)
+
+    # Convert timestamps to split Julian dates
+    jd_arr, fr_arr = datetimes_to_split_jd(timestamps)
+
+    # Construct SatrecArray and execute accelerated batch propagation
+    satrec_array = sgp4.api.SatrecArray([r.satrec for r in records])
+    error_codes, positions, velocities = satrec_array.sgp4(jd_arr, fr_arr)
+
+    # Inspect error matrix and fail fast if any error code is non-zero
+    _check_constellation_sgp4_errors(records, timestamps, error_codes)
+
+    return ConstellationEphemerisProduct(
+        satellite_ids=tuple(sat_ids),
+        satnums=tuple(satnums),
+        timestamps_utc=timestamps,
+        position_teme_km=positions,
+        velocity_teme_km_s=velocities,
+        sgp4_error_codes=error_codes,
+        frame="TEME",
+        position_unit="km",
+        velocity_unit="km/s",
+        propagation_model="SGP4",
+        gravity_model=shared_gravity_model,
+    )

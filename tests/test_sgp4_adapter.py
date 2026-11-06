@@ -263,3 +263,64 @@ def test_load_and_convert_smoke_01_satellite() -> None:
     assert record.satrec.error == 0
     assert record.satrec.ecco == 0.0
     assert record.satrec.inclo == pytest.approx(math.radians(53.0))
+
+
+
+# --- Stage 2: Constellation Adapter Tests ---
+
+
+def test_create_sgp4_constellation_nominal() -> None:
+    """Verify exact 6 records from Walker 6/2/1, sequential satnums 1..6, and metadata."""
+    from v0_tool.constellation import generate_walker_delta
+    from v0_tool.config import WalkerDeltaConfig
+    from v0_tool.sgp4_adapter import create_sgp4_constellation
+
+    cfg = WalkerDeltaConfig(
+        constellation_id="WALKER-6-2-1",
+        total_satellites=6,
+        planes=2,
+        phasing=1,
+        altitude_km=550.0,
+        inclination_deg=53.0,
+    )
+    sats = generate_walker_delta(cfg)
+    epoch_utc = datetime(2026, 10, 26, 0, 0, 0, tzinfo=timezone.utc)
+
+    records = create_sgp4_constellation(sats, epoch_utc)
+
+    assert isinstance(records, tuple)
+    assert len(records) == 6
+
+    expected_ids = [
+        "SAT-P01-S01",
+        "SAT-P01-S02",
+        "SAT-P01-S03",
+        "SAT-P02-S01",
+        "SAT-P02-S02",
+        "SAT-P02-S03",
+    ]
+
+    for idx, (rec, exp_id) in enumerate(zip(records, expected_ids)):
+        assert isinstance(rec, Sgp4SatelliteRecord)
+        assert rec.satellite_id == exp_id
+        assert rec.satnum == idx + 1
+        assert rec.epoch_utc == epoch_utc
+        assert rec.gravity_model == "WGS72"
+        assert rec.satrec.error == 0
+
+
+def test_create_sgp4_constellation_rejections() -> None:
+    """Verify rejection of empty satellite sequence and duplicate IDs."""
+    from v0_tool.sgp4_adapter import create_sgp4_constellation
+
+    epoch_utc = datetime(2026, 10, 26, 0, 0, 0, tzinfo=timezone.utc)
+
+    # Empty input
+    with pytest.raises(ValueError, match="must not be empty"):
+        create_sgp4_constellation((), epoch_utc)
+
+    # Duplicate satellite IDs
+    sat1 = _sample_satellite_config()
+    sat2 = _sample_satellite_config()
+    with pytest.raises(ValueError, match="Duplicate satellite_id detected"):
+        create_sgp4_constellation((sat1, sat2), epoch_utc)

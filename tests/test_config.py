@@ -346,9 +346,9 @@ def test_load_poc_01_yaml() -> None:
     assert scenario.constellation is not None
     assert scenario.satellites == []
     assert scenario.constellation.type == "walker_delta"
-    assert scenario.constellation.constellation_id == "WALKER-6-2-1"
+    assert scenario.constellation.constellation_id == "WALKER-6-3-1"
     assert scenario.constellation.total_satellites == 6
-    assert scenario.constellation.planes == 2
+    assert scenario.constellation.planes == 3
     assert scenario.constellation.phasing == 1
 
     # Exactly two ground stations

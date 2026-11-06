@@ -295,3 +295,230 @@ def test_end_to_end_from_smoke_01_yaml() -> None:
     assert len(eph.timestamps_utc) == 73
     assert eph.position_teme_km.shape == (73, 3)
     assert np.all(eph.sgp4_error_codes == 0)
+
+
+
+# --- Stage 2: Constellation Propagation Tests ---
+
+
+def test_propagate_constellation_poc_01_nominal() -> None:
+    """Verify batch propagation of Walker 6/3/1 over poc_01 24h interval using SatrecArray."""
+    from v0_tool.constellation import generate_walker_delta
+    from v0_tool.propagation import ConstellationEphemerisProduct, propagate_constellation
+    from v0_tool.sgp4_adapter import create_sgp4_constellation
+
+    poc_yaml_path = Path(__file__).resolve().parent.parent / "scenarios" / "poc_01.yaml"
+    scenario = load_scenario(poc_yaml_path)
+
+    # 1. Generate Walker 6/3/1 satellites
+    sat_configs = generate_walker_delta(scenario.constellation)
+    assert len(sat_configs) == 6
+
+    # 2. Build SGP4 records
+    records = create_sgp4_constellation(sat_configs, scenario.analysis.start_time_utc)
+    assert len(records) == 6
+
+    # 3. Generate 24-hour / 60s time grid
+    time_grid = generate_time_grid(scenario.analysis)
+    assert len(time_grid) == 1441
+
+    # 4. Propagate batch
+    const_eph = propagate_constellation(records, time_grid)
+
+    assert isinstance(const_eph, ConstellationEphemerisProduct)
+    assert const_eph.satellite_ids == tuple(s.satellite_id for s in sat_configs)
+    assert const_eph.satnums == (1, 2, 3, 4, 5, 6)
+    assert const_eph.frame == "TEME"
+    assert const_eph.position_unit == "km"
+    assert const_eph.velocity_unit == "km/s"
+    assert const_eph.propagation_model == "SGP4"
+    assert const_eph.gravity_model == "WGS72"
+
+    # Exact array shapes
+    assert const_eph.timestamps_utc.shape == (1441,)
+    assert const_eph.position_teme_km.shape == (6, 1441, 3)
+    assert const_eph.velocity_teme_km_s.shape == (6, 1441, 3)
+    assert const_eph.sgp4_error_codes.shape == (6, 1441)
+
+    # Numerical dtypes
+    assert const_eph.position_teme_km.dtype == np.float64
+    assert const_eph.velocity_teme_km_s.dtype == np.float64
+    assert np.issubdtype(const_eph.sgp4_error_codes.dtype, np.integer)
+
+    # Zero SGP4 errors across all 6 satellites and 1,441 times
+    assert np.all(const_eph.sgp4_error_codes == 0)
+
+    # Finite positions and velocities
+    assert np.all(np.isfinite(const_eph.position_teme_km))
+    assert np.all(np.isfinite(const_eph.velocity_teme_km_s))
+
+    # Broad physical radius bounds [6500, 7500] km and speed bounds [6.0, 9.0] km/s
+    radii = np.linalg.norm(const_eph.position_teme_km, axis=2)  # shape (6, 1441)
+    speeds = np.linalg.norm(const_eph.velocity_teme_km_s, axis=2)  # shape (6, 1441)
+    assert np.all((radii >= 6500.0) & (radii <= 7500.0))
+    assert np.all((speeds >= 6.0) & (speeds <= 9.0))
+
+    # Reference-scenario sanity criterion for poc_01 (Walker 6/3/1):
+    # Verify all six initial position vectors are distinct and pairwise separation exceeds 1000 km.
+    initial_positions = const_eph.position_teme_km[:, 0, :]  # shape (6, 3)
+    for i in range(6):
+        for j in range(i + 1, 6):
+            pos_sep = np.linalg.norm(initial_positions[i] - initial_positions[j])
+            assert not np.allclose(initial_positions[i], initial_positions[j])
+            assert pos_sep > 1000.0  # Pairwise position separation exceeds 1000 km
+
+
+def test_propagate_constellation_equivalence_with_single_propagator() -> None:
+    """Consistency test: Compare satellite 0 from batch SatrecArray against Satrec.sgp4_array."""
+    from v0_tool.constellation import generate_walker_delta
+    from v0_tool.propagation import propagate_constellation
+    from v0_tool.sgp4_adapter import create_sgp4_constellation
+
+    poc_yaml_path = Path(__file__).resolve().parent.parent / "scenarios" / "poc_01.yaml"
+    scenario = load_scenario(poc_yaml_path)
+
+    sat_configs = generate_walker_delta(scenario.constellation)
+    records = create_sgp4_constellation(sat_configs, scenario.analysis.start_time_utc)
+    time_grid = generate_time_grid(scenario.analysis)
+
+    # Batch propagation
+    batch_eph = propagate_constellation(records, time_grid)
+
+    # Single-satellite propagation for satellite 0
+    single_eph = propagate_satellite(records[0], time_grid)
+
+    # Compare batch slice [0, :, :] against single ephemeris using tight tolerances
+    np.testing.assert_allclose(
+        batch_eph.position_teme_km[0],
+        single_eph.position_teme_km,
+        rtol=1e-12,
+        atol=1e-9,
+    )
+    np.testing.assert_allclose(
+        batch_eph.velocity_teme_km_s[0],
+        single_eph.velocity_teme_km_s,
+        rtol=1e-12,
+        atol=1e-9,
+    )
+    assert np.array_equal(batch_eph.sgp4_error_codes[0], single_eph.sgp4_error_codes)
+
+
+def test_propagate_constellation_deterministic() -> None:
+    """Verify repeated batch propagation produces identical numerical arrays."""
+    from v0_tool.constellation import generate_walker_delta
+    from v0_tool.propagation import propagate_constellation
+    from v0_tool.sgp4_adapter import create_sgp4_constellation
+
+    poc_yaml_path = Path(__file__).resolve().parent.parent / "scenarios" / "poc_01.yaml"
+    scenario = load_scenario(poc_yaml_path)
+
+    sat_configs = generate_walker_delta(scenario.constellation)
+    records = create_sgp4_constellation(sat_configs, scenario.analysis.start_time_utc)
+    time_grid = generate_time_grid(scenario.analysis)
+
+    eph1 = propagate_constellation(records, time_grid)
+    eph2 = propagate_constellation(records, time_grid)
+
+    assert np.array_equal(eph1.position_teme_km, eph2.position_teme_km)
+    assert np.array_equal(eph1.velocity_teme_km_s, eph2.velocity_teme_km_s)
+    assert np.array_equal(eph1.sgp4_error_codes, eph2.sgp4_error_codes)
+
+
+def test_propagate_constellation_rejections() -> None:
+    """Verify input validation rules in propagate_constellation."""
+    from v0_tool.constellation import generate_walker_delta
+    from v0_tool.propagation import propagate_constellation
+    from v0_tool.sgp4_adapter import Sgp4SatelliteRecord, create_sgp4_constellation
+
+    poc_yaml_path = Path(__file__).resolve().parent.parent / "scenarios" / "poc_01.yaml"
+    scenario = load_scenario(poc_yaml_path)
+    sat_configs = generate_walker_delta(scenario.constellation)
+    records = create_sgp4_constellation(sat_configs, scenario.analysis.start_time_utc)
+    time_grid = generate_time_grid(scenario.analysis)
+
+    # Empty records
+    with pytest.raises(ValueError, match="records tuple must not be empty"):
+        propagate_constellation((), time_grid)
+
+    # Duplicate satellite IDs
+    dup_records = (records[0], records[0])
+    with pytest.raises(ValueError, match="Duplicate satellite_id detected"):
+        propagate_constellation(dup_records, time_grid)
+
+    # Duplicate satnums
+    rec_dup_satnum = Sgp4SatelliteRecord(
+        satellite_id="SAT-DIFF",
+        satnum=records[0].satnum,
+        satrec=records[1].satrec,
+        epoch_utc=records[0].epoch_utc,
+        gravity_model=records[0].gravity_model,
+    )
+    with pytest.raises(ValueError, match="Duplicate satnum detected"):
+        propagate_constellation((records[0], rec_dup_satnum), time_grid)
+
+    # Non-positive satnum
+    rec_zero_satnum = Sgp4SatelliteRecord(
+        satellite_id="SAT-DIFF",
+        satnum=0,
+        satrec=records[1].satrec,
+        epoch_utc=records[0].epoch_utc,
+        gravity_model=records[0].gravity_model,
+    )
+    with pytest.raises(ValueError, match="must be positive integers"):
+        propagate_constellation((records[0], rec_zero_satnum), time_grid)
+
+    # Differing gravity models
+    rec_wgs84 = Sgp4SatelliteRecord(
+        satellite_id="SAT-DIFF",
+        satnum=99,
+        satrec=records[1].satrec,
+        epoch_utc=records[0].epoch_utc,
+        gravity_model="WGS84",
+    )
+    with pytest.raises(ValueError, match="must share one gravity model"):
+        propagate_constellation((records[0], rec_wgs84), time_grid)
+
+    # Differing epochs
+    rec_diff_epoch = Sgp4SatelliteRecord(
+        satellite_id="SAT-DIFF",
+        satnum=99,
+        satrec=records[1].satrec,
+        epoch_utc=records[0].epoch_utc + timedelta(hours=1),
+        gravity_model=records[0].gravity_model,
+    )
+    with pytest.raises(ValueError, match="must share one UTC epoch"):
+        propagate_constellation((records[0], rec_diff_epoch), time_grid)
+
+
+def test_constellation_sgp4_error_handling_synthetic() -> None:
+    """Verify synthetic multi-satellite error reporting via ConstellationPropagationError."""
+    from v0_tool.propagation import ConstellationPropagationError, _check_constellation_sgp4_errors
+    from v0_tool.sgp4_adapter import create_sgp4_constellation
+    from v0_tool.constellation import generate_walker_delta
+
+    poc_yaml_path = Path(__file__).resolve().parent.parent / "scenarios" / "poc_01.yaml"
+    scenario = load_scenario(poc_yaml_path)
+    sat_configs = generate_walker_delta(scenario.constellation)
+    records = create_sgp4_constellation(sat_configs, scenario.analysis.start_time_utc)
+    time_grid = np.array(
+        [
+            datetime(2026, 10, 26, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 26, 0, 1, 0, tzinfo=timezone.utc),
+        ],
+        dtype=object,
+    )
+
+    # Synthetic error array with error on satellite index 1, time index 1
+    error_matrix = np.zeros((6, 2), dtype=np.uint8)
+    error_matrix[1, 1] = 6  # Code 6 (decay)
+
+    with pytest.raises(ConstellationPropagationError) as exc_info:
+        _check_constellation_sgp4_errors(records, time_grid, error_matrix)
+
+    msg = str(exc_info.value)
+    assert "1/12 samples" in msg
+    assert "SAT-P01-S02" in msg
+    assert "satnum 2" in msg
+    assert "time index 1" in msg
+    assert "2026-10-26 00:01:00+00:00" in msg
+    assert "Code 6" in msg
